@@ -1,0 +1,29 @@
+/* 整个刻度组的默认样式 */
+.timeline-ticks {
+  /* 动画过渡，让缩放和拖动更平滑 */
+  /* transition: transform 0.05s linear; */
+}
+
+/* 刻度线的样式 */
+.tick-line {
+  stroke: #9ca3af; /* 灰色 */
+  stroke-width: 1px;
+}
+
+/* 鼠标悬停在刻度线上时变色 */
+.tick-line:hover {
+  stroke: #ef4444; /* 红色 */
+}
+
+/* 刻度标签的样式 */
+.tick-label {
+  font-family: sans-serif;
+  font-size: 12px;
+  fill: #4b5563; /* 深灰色 */
+  text-anchor: middle; /* 文字居中对齐 */
+  user-select: none; /* 禁止选中文本 */
+}
+
+.timeline-svg {
+    border-top: 1px solid #9ca3af;
+}
