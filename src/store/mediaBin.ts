@@ -6,7 +6,6 @@ export type MediaItem = {
   id: string
   type: 'video' | 'image'
   name: string
-  src: string // 持久化的 OPFS 路径
   width: number
   height: number
   duration?: number // 仅视频

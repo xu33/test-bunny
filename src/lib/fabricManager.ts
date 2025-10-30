@@ -143,11 +143,10 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
   }
 
   const createClipObject = async (clip: Clip) => {
-    if (clip.content?.type === 'image' && clip.content.src) {
-      const url = await getBlobUrl(clip.content.src)
-      console.log('createClipObject image url', url, clip.id)
+    if (clip.content?.type === 'image' && clip.content.mediaId) {
+      const objectUrl = await getBlobUrl(clip.content.mediaId)
       const imgObj = (await fabric.Image.fromURL(
-        url!
+        objectUrl!
       )) as unknown as FabricObjectWithId
 
       imgObj.set({

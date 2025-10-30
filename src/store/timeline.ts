@@ -25,10 +25,8 @@ interface VideoContent {
 interface ImageContent {
   type: 'image'
   mediaId: string // 关联到 MediaItem 的 ID
-  mediaUrl: string // 文件的 URL
   width: number // 图片显示宽度
   height: number // 图片显示高度
-  src: string
 }
 
 interface TextContent {
@@ -105,14 +103,14 @@ const clamp = (value: number, min: number, max: number) => {
 export const useTimelineStore = create<TimelineState & TimelineActions>()(
   immer((set, get) => ({
     // --- State ---
-    timelineDuration: 600, // 先固定为 10 分钟
+    timelineDuration: 60, // 先固定为 10 分钟
     currentTime: 0,
     isUpdatingFromFabric: false,
     clips: [
       {
         id: 'clip-1',
         timelineStart: 0,
-        sourceDuration: 150,
+        sourceDuration: 10,
         trimStart: 0,
         trimEnd: 0,
         trackIndex: 0,
@@ -132,8 +130,8 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
       },
       {
         id: 'clip-2',
-        timelineStart: 220,
-        sourceDuration: 100,
+        timelineStart: 5,
+        sourceDuration: 20,
         trimStart: 0,
         trimEnd: 0,
         trackIndex: 1,
@@ -162,7 +160,7 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
           const newClip: Clip = {
             id: crypto.randomUUID(),
             timelineStart: 0,
-            sourceDuration: 60, // 文字默认5秒，图片10秒
+            sourceDuration: 2, // 文字默认5秒，图片10秒
             trimStart: 0,
             trimEnd: 0,
             trackIndex: 0,

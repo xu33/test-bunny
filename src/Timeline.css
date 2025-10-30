@@ -19,7 +19,7 @@
 .tick-label {
   font-family: sans-serif;
   font-size: 12px;
-  fill: #4b5563; /* 深灰色 */
+  fill: #fff; /* 深灰色 */
   text-anchor: middle; /* 文字居中对齐 */
   user-select: none; /* 禁止选中文本 */
 }

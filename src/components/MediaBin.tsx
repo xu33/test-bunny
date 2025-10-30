@@ -7,8 +7,8 @@ import {
 } from '@heroicons/react/24/outline'
 import { useMediaBinStore } from '@/store/mediaBin'
 import type { MediaItem } from '@/store/mediaBin'
-import { saveFile, deleteFile } from '@/lib/opfsManager' // 2. 导入 deleteFile
-import { getBlobUrl, revokeBlobUrl } from '@/lib/blobCache'
+import { saveFile, deleteFile, getFile } from '@/lib/db' // 2. 导入 deleteFile
+// import { getBlobUrl, revokeBlobUrl } from '@/lib/blobCache'
 import { useTimelineStore } from '@/store/timeline'
 import fabricManager from '@/lib/fabricManager'
 
@@ -21,7 +21,8 @@ const MediaPreview = ({ item }: { item: MediaItem }) => {
 
     const loadAndSetSrc = async () => {
       // 从 OPFS 加载文件
-      const objectUrl = await getBlobUrl(item.src)
+      const File = await getFile(item.id)
+      const objectUrl = File ? URL.createObjectURL(File) : undefined
       setDisplaySrc(objectUrl)
     }
 
@@ -33,7 +34,7 @@ const MediaPreview = ({ item }: { item: MediaItem }) => {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [item.src]) // 当 src 变化时重新执行
+  }, [item.id]) // 当 src 变化时重新执行
 
   if (!displaySrc) {
     // 加载中或失败状态
@@ -119,23 +120,16 @@ export function MediaBin() {
 
     for (const file of Array.from(files)) {
       try {
-        // 2. 为文件生成一个唯一的 OPFS 路径
-        const fileExtension = file.name.split('.').pop() || ''
         const uniqueId = crypto.randomUUID()
-        const opfsPath = `/${file.type.split('/')[0]}s/${uniqueId}.${fileExtension}`
 
-        // 3. 将文件保存到 OPFS
-        const savedPath = await saveFile(opfsPath, file)
-        if (!savedPath) {
-          throw new Error('Failed to save file to OPFS.')
-        }
+        // 3. 将文件保存到 indexedDB
+        await saveFile(uniqueId, file)
 
         // 4. 获取元数据并创建 MediaItem
         const metadata = await getMediaMetadata(file)
         const newMediaItem: MediaItem = {
           ...metadata,
           id: uniqueId,
-          src: savedPath, // 5. 使用持久化的 OPFS 路径
         }
 
         // 6. 将包含 OPFS 路径的 MediaItem 添加到 store
@@ -155,10 +149,8 @@ export function MediaBin() {
       addClip({
         type: item.type,
         mediaId: item.id,
-        mediaUrl: item.src,
         width: item.width,
         height: item.height,
-        src: item.src,
       })
 
       fabricManager.syncClips(useTimelineStore.getState().clips)
@@ -173,7 +165,7 @@ export function MediaBin() {
     e.stopPropagation() // 防止触发父元素的 onClick
 
     // 从 OPFS 删除文件
-    await deleteFile(item.src)
+    await deleteFile(item.id)
 
     // 从 mediaBin store 删除
     deleteMediaItem(item.id)
@@ -182,7 +174,7 @@ export function MediaBin() {
     // removeClipsByMediaId(item.id)
 
     // 释放 blob URL 缓存
-    revokeBlobUrl(item.src)
+    // revokeBlobUrl(item.src)
 
     // 重新同步 fabric 画布
     fabricManager.syncClips(useTimelineStore.getState().clips)

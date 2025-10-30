@@ -1,6 +1,6 @@
 import * as d3 from 'd3'
 import { useTimelineStore } from '@/store/timeline'
-import { useSpring, animated } from '@react-spring/web' // 1. 导入 react-spring
+import { Globals, useSpring, animated } from '@react-spring/web' // 1. 导入 react-spring
 import { useDrag } from '@use-gesture/react' // 2. 导入 use-gesture
 
 interface ClipComponentProps {
@@ -8,6 +8,10 @@ interface ClipComponentProps {
   transform: d3.ZoomTransform
   xScale: d3.ScaleLinear<number, number>
 }
+
+Globals.assign({
+  skipAnimation: true,
+})
 
 export function ClipComponent({
   clipId,
@@ -24,9 +28,8 @@ export function ClipComponent({
     const currentDuration = clip.sourceDuration - clip.trimStart - clip.trimEnd
 
     return {
-      x: xScale(clip.timelineStart),
-      width: xScale(currentDuration),
-      config: { tension: 300, friction: 30 }, // 动画配置
+      x: Math.floor(xScale(clip.timelineStart)),
+      width: Math.floor(xScale(currentDuration)),
     }
   }, [clip, xScale, transform]) // 当 clip 数据变化时，spring 会自动更新到新位置
 
@@ -35,7 +38,8 @@ export function ClipComponent({
     // memo实测在拖动过程中不会变，一直是初次（拖动第一帧）传入的值
     // console.log('memo', memo)
     const newX = memo + mx / transform.k // 根据缩放调整移动距离
-    api.set({ x: newX }) // 实时更新动画
+    const newXClamped = Math.max(0, newX) // 不允许拖出左边界
+    api.set({ x: newXClamped }) // 实时更新动画
 
     if (!down) {
       // 拖动结束
@@ -51,7 +55,51 @@ export function ClipComponent({
     return memo
   })
 
-  // 绑定修剪手势 (左侧句柄) 同时改变 x 和 width，有点复杂，先注释掉
+  // 绑定修剪手势 (左侧句柄) 同时改变 x 和 width，无trim逻辑
+  // const bindTrimLeftNoTrimResize = useDrag(
+  //   ({
+  //     down,
+  //     movement: [mx],
+  //     memo = {
+  //       width: width.get(),
+  //       x: x.get(),
+  //     },
+  //     event,
+  //   }) => {
+  //     event.stopPropagation()
+  //     if (!clip) return memo
+
+  //     const rightX = memo.x + memo.width
+  //     const newX = memo.x + Math.round(mx)
+  //     const newWidth = rightX - newX
+
+  //     console.log({
+  //       rightX,
+  //       newX,
+  //       newWidth,
+  //     })
+
+  //     api.set({
+  //       x: newX,
+  //       width: newWidth,
+  //     })
+
+  //     if (!down) {
+  //       const newDuration = xScale.invert(newWidth)
+  //       const newTimelineStart = xScale.invert(newX)
+  //       trimClip({
+  //         clipId: clip.id,
+  //         handle: 'left',
+  //         newTimelineStart: newTimelineStart,
+  //         newDuration,
+  //       })
+  //     }
+
+  //     return memo
+  //   }
+  // )
+
+  // 绑定修剪手势 (左侧句柄) 同时改变 x 和 width
   const bindTrimLeft = useDrag(
     ({
       down,
@@ -66,11 +114,11 @@ export function ClipComponent({
       if (!clip) return memo
 
       const rightX = memo.x + memo.width
-      const candidateLeft = memo.x + mx / transform.k
+      const candidateLeft = Math.floor(memo.x + mx / transform.k)
       const candidateWidth = rightX - candidateLeft
 
       const maxDuration = clip.sourceDuration - clip.trimEnd
-      const maxWidth = xScale(maxDuration)
+      const maxWidth = Math.floor(xScale(maxDuration))
 
       let newX, newWidth
       if (candidateWidth > maxWidth) {
@@ -81,14 +129,23 @@ export function ClipComponent({
         newX = candidateLeft
       }
 
+      newX = Math.floor(newX)
+      newWidth = Math.floor(newWidth)
+
+      console.log({
+        rightX,
+        newX,
+        newWidth,
+        k: transform.k,
+      })
+
       // 最小宽度约束
       // const minWidth = 30
-
       // const clampedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth))
 
       api.set({
-        x: Math.round(newX),
-        width: Math.round(newWidth),
+        x: newX,
+        width: newWidth,
       })
 
       if (!down) {
@@ -106,7 +163,7 @@ export function ClipComponent({
     }
   )
 
-  // 5. 绑定修剪手势 (右侧句柄)
+  // 绑定修剪手势 (右侧句柄)
   const bindTrimRight = useDrag(
     ({ down, movement: [mx], memo = width.get(), event }) => {
       event.stopPropagation()
@@ -121,7 +178,7 @@ export function ClipComponent({
       const maxWidth = xScale(maxDuration)
 
       const clampedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth))
-      api.set({ width: Math.round(clampedWidth) })
+      api.set({ width: clampedWidth })
 
       if (!down) {
         // --- 拖动结束，转换回时间单位 ---
@@ -144,10 +201,10 @@ export function ClipComponent({
   return (
     <animated.div
       {...bindDrag()}
-      className={`bg-blue-200 border border-gray-500 cursor-grab touch-none h-10`}
+      className={`bg-blue-200 border border-gray-500 cursor-grab touch-none h-10 relative`}
       style={{
-        width: width.to(val => `${Math.round(val * transform.k)}px`),
-        x: x.to(val => `${Math.round(val * transform.k + transform.x)}px`),
+        width: width.to(val => Math.floor(val * transform.k) + 'px'),
+        x: x.to(val => `${Math.floor(val * transform.k + transform.x)}px`),
       }}
     >
       {/* 左侧修剪句柄 */}

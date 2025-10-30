@@ -15,6 +15,8 @@
     "@tailwindcss/vite": "^4.1.15",
     "@use-gesture/react": "^10.3.1",
     "d3": "^7.9.0",
+    "dexie": "^4.2.1",
+    "dexie-react-hooks": "^4.2.0",
     "fabric": "^6.7.1",
     "i": "^0.3.7",
     "immer": "^10.1.3",
