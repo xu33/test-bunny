@@ -20,6 +20,8 @@ interface VideoContent {
   color: string // 视频片段在时间轴上的颜色
   width: number // 图片显示宽度
   height: number // 图片显示高度
+  duration: number // 视频时长
+  posterSrc?: string // 首帧预览图
 }
 
 interface ImageContent {
@@ -48,10 +50,12 @@ export interface Clip {
 
   // --- 时间属性 (Temporal Properties) ---
   timelineStart: number // 片段在时间轴上的起始时间（秒）
-  sourceDuration: number // 源素材的总时长（秒）
+  duration: number // 片段在时间轴上占用的时长（秒）
+  sourceDuration: number | null // 源素材总时长（秒），对无时长限制的素材为 null
   trimStart: number // 从源素材开头修剪掉的时长（秒）
   trimEnd: number // 从源素材结尾修剪掉的时长（秒）
   trackIndex: number // 片段所在的轨道号 (0, 1, 2...)
+  temporalMode: 'bounded' | 'flexible' // bounded：受源素材限制；flexible：无源素材限制
 
   // --- 空间属性 (Spatial Properties) ---
   spatial: ClipSpatial
@@ -98,6 +102,8 @@ const clamp = (value: number, min: number, max: number) => {
   return Math.max(min, Math.min(max, value))
 }
 
+const MIN_CLIP_DURATION = 0.1 // 秒，避免片段被压缩为 0
+
 // --- 3. 创建 Zustand Store ---
 
 export const useTimelineStore = create<TimelineState & TimelineActions>()(
@@ -110,10 +116,12 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
       {
         id: 'clip-1',
         timelineStart: 0,
+        duration: 10,
         sourceDuration: 10,
         trimStart: 0,
         trimEnd: 0,
         trackIndex: 0,
+        temporalMode: 'bounded',
         // --- 空间属性默认值 ---
         spatial: {
           x: 100,
@@ -131,10 +139,12 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
       {
         id: 'clip-2',
         timelineStart: 5,
+        duration: 20,
         sourceDuration: 20,
         trimStart: 0,
         trimEnd: 0,
         trackIndex: 1,
+        temporalMode: 'bounded',
         // --- 空间属性默认值 ---
         spatial: {
           x: 400,
@@ -160,10 +170,12 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
           const newClip: Clip = {
             id: crypto.randomUUID(),
             timelineStart: 0,
-            sourceDuration: 2, // 文字默认5秒，图片10秒
+            duration: 5, // 默认持续 5 秒，可继续拉伸
+            sourceDuration: null,
             trimStart: 0,
             trimEnd: 0,
             trackIndex: 0,
+            temporalMode: 'flexible',
             color: 'black',
             spatial: {
               x: 0,
@@ -176,6 +188,36 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
               opacity: 1,
             },
             content, // 直接使用传入的 content 对象
+          }
+
+          state.clips.push(newClip)
+        } else if (content.type === 'video') {
+          const boundedDuration = Math.max(
+            MIN_CLIP_DURATION,
+            content.duration ?? MIN_CLIP_DURATION
+          )
+
+          const newClip: Clip = {
+            id: crypto.randomUUID(),
+            timelineStart: 0,
+            duration: boundedDuration,
+            sourceDuration: content.duration ?? boundedDuration,
+            trimStart: 0,
+            trimEnd: 0,
+            trackIndex: 0,
+            temporalMode: 'bounded',
+            color: content.color,
+            spatial: {
+              x: 0,
+              y: 0,
+              width: content.width,
+              height: content.height,
+              rotation: 0,
+              scaleX: 1,
+              scaleY: 1,
+              opacity: 1,
+            },
+            content,
           }
 
           state.clips.push(newClip)
@@ -203,7 +245,7 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
         if (!clip) return
 
         const { timelineDuration } = get()
-        const clipDuration = clip.sourceDuration - clip.trimStart - clip.trimEnd
+        const clipDuration = clip.duration
 
         // 约束拖动范围
         const clampedX = clamp(
@@ -247,6 +289,21 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
       set(state => {
         const clip = state.clips.find(c => c.id === clipId)
         if (!clip) return
+        const { timelineDuration } = get()
+        const safeDuration = Math.max(MIN_CLIP_DURATION, newDuration)
+
+        const clampTimelineStart = (timelineStart: number) => {
+          const maxStart = Math.max(0, timelineDuration - clip.duration)
+          return clamp(timelineStart, 0, maxStart)
+        }
+
+        if (clip.temporalMode === 'flexible' || clip.sourceDuration === null) {
+          clip.duration = safeDuration
+          if (handle === 'left') {
+            clip.timelineStart = clampTimelineStart(newTimelineStart)
+          }
+          return
+        }
 
         // 计算新的 trimStart 和 trimEnd
         // clip.timelineStart = newTimelineStart
@@ -256,21 +313,22 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
         if (handle === 'right') {
           const maxTrimEnd = clip.sourceDuration - clip.trimStart
           clip.trimEnd = clamp(
-            clip.sourceDuration - newDuration - clip.trimStart,
+            clip.sourceDuration - safeDuration - clip.trimStart,
             0,
             maxTrimEnd
           )
 
-          clip.timelineStart = newTimelineStart
+          clip.duration = clip.sourceDuration - clip.trimStart - clip.trimEnd
+          clip.timelineStart = clampTimelineStart(newTimelineStart)
         } else if (handle === 'left') {
-          clip.timelineStart = newTimelineStart
-
           const maxTrimStart = clip.sourceDuration - clip.trimEnd
           clip.trimStart = clamp(
-            clip.sourceDuration - newDuration - clip.trimEnd,
+            clip.sourceDuration - safeDuration - clip.trimEnd,
             0,
             maxTrimStart
           )
+          clip.duration = clip.sourceDuration - clip.trimStart - clip.trimEnd
+          clip.timelineStart = clampTimelineStart(newTimelineStart)
         }
       }),
   }))

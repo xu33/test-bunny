@@ -55,18 +55,23 @@ export function Canvas() {
 
       if (isUpdatingFromFabric) return
       // await fabricManager.syncClips(clips)
-      fabricManager.updateObjectsVisibility(currentTime, clips)
+      void fabricManager.updateObjectsVisibility(currentTime, clips)
     }
 
     // 初次同步
     const currentState = useTimelineStore.getState()
 
-    fabricManager.syncClips(currentState.clips).then(() => {
-      fabricManager.updateObjectsVisibility(
-        currentState.currentTime,
-        currentState.clips
+    fabricManager
+      .syncClips(currentState.clips)
+      .then(() =>
+        fabricManager.updateObjectsVisibility(
+          currentState.currentTime,
+          currentState.clips
+        )
       )
-    })
+      .catch(error => {
+        console.error('Sync clips failed:', error)
+      })
     // store改变通知fabric重新渲染
     const unsubcribe = useTimelineStore.subscribe(storeChangeListener)
 

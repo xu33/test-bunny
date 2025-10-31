@@ -134,7 +134,7 @@ export class FabricCanvasManager {
       const clip = clips.find(c => c.id === fabricObj.clipId)
       if (!clip) return
 
-      const clipDuration = clip.sourceDuration - clip.trimStart - clip.trimEnd
+      const clipDuration = clip.duration
       const clipEndTime = clip.timelineStart + clipDuration
       const isVisible =
         currentTime >= clip.timelineStart && currentTime < clipEndTime

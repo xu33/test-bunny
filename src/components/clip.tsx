@@ -25,11 +25,9 @@ export function ClipComponent({
   // 3. 使用 useSpring 控制位置和大小
   const [{ x, width }, api] = useSpring(() => {
     if (!clip) return { x: 0, width: 0 }
-    const currentDuration = clip.sourceDuration - clip.trimStart - clip.trimEnd
-
     return {
       x: Math.floor(xScale(clip.timelineStart)),
-      width: Math.floor(xScale(currentDuration)),
+      width: Math.floor(xScale(clip.duration)),
     }
   }, [clip, xScale, transform]) // 当 clip 数据变化时，spring 会自动更新到新位置
 
@@ -117,27 +115,24 @@ export function ClipComponent({
       const candidateLeft = Math.floor(memo.x + mx / transform.k)
       const candidateWidth = rightX - candidateLeft
 
-      const maxDuration = clip.sourceDuration - clip.trimEnd
-      const maxWidth = Math.floor(xScale(maxDuration))
+      const hasBoundedSource =
+        clip.temporalMode === 'bounded' && clip.sourceDuration !== null
+      const maxDuration = hasBoundedSource
+        ? clip.sourceDuration - clip.trimEnd
+        : undefined
+      const maxWidth =
+        maxDuration !== undefined ? Math.floor(xScale(maxDuration)) : undefined
 
-      let newX, newWidth
-      if (candidateWidth > maxWidth) {
+      let newX = candidateLeft
+      let newWidth = candidateWidth
+
+      if (maxWidth !== undefined && candidateWidth > maxWidth) {
         newWidth = maxWidth
         newX = rightX - maxWidth
-      } else {
-        newWidth = candidateWidth
-        newX = candidateLeft
       }
 
       newX = Math.floor(newX)
       newWidth = Math.floor(newWidth)
-
-      console.log({
-        rightX,
-        newX,
-        newWidth,
-        k: transform.k,
-      })
 
       // 最小宽度约束
       // const minWidth = 30
@@ -173,11 +168,17 @@ export function ClipComponent({
 
       // 最小宽度约束
       const minWidth = 30
-      // 最大宽度约束 (源素材时长 - 左侧已修剪时长)
-      const maxDuration = clip.sourceDuration - clip.trimStart
-      const maxWidth = xScale(maxDuration)
+      const hasBoundedSource =
+        clip.temporalMode === 'bounded' && clip.sourceDuration !== null
+      const maxDuration = hasBoundedSource
+        ? clip.sourceDuration - clip.trimStart
+        : undefined
+      const maxWidth = maxDuration !== undefined ? xScale(maxDuration) : null
 
-      const clampedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth))
+      const clampedWidth =
+        maxWidth !== null
+          ? Math.max(minWidth, Math.min(newWidth, maxWidth))
+          : Math.max(minWidth, newWidth)
       api.set({ width: clampedWidth })
 
       if (!down) {

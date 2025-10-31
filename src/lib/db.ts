@@ -4,12 +4,13 @@ import Dexie from 'dexie'
 export const db = new Dexie('test-bunny')
 
 // 建表：key 为主键
-db.version(1).stores({
-  files: 'key', // 简单 key-value 结构
+db.version(2).stores({
+  files: '', // 简单 key-value 结构
 })
 
 export async function saveFile(key: string, file: File) {
-  await db.table('files').put({ key, file })
+  console.log('saveFile to db', key, file)
+  await db.table('files').put(file, key)
 }
 
 export async function getFile(key: string): Promise<File | null> {
@@ -18,7 +19,7 @@ export async function getFile(key: string): Promise<File | null> {
     console.warn('⚠️ 文件未找到', key)
     return null
   }
-  return record.file
+  return record
 }
 
 export async function deleteFile(key: string) {

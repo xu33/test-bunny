@@ -11,6 +11,7 @@ import { saveFile, deleteFile, getFile } from '@/lib/db' // 2. 导入 deleteFile
 // import { getBlobUrl, revokeBlobUrl } from '@/lib/blobCache'
 import { useTimelineStore } from '@/store/timeline'
 import fabricManager from '@/lib/fabricManager'
+import { ALL_FORMATS, BlobSource, Input, VideoSampleSink } from 'mediabunny'
 
 // 新的预览组件
 const MediaPreview = ({ item }: { item: MediaItem }) => {
@@ -144,7 +145,7 @@ export function MediaBin() {
     fileInputRef.current?.click()
   }
 
-  const handleMediaItemClick = (item: MediaItem) => {
+  const handleMediaItemClick = async (item: MediaItem) => {
     if (item.type === 'image') {
       addClip({
         type: item.type,
@@ -153,7 +154,64 @@ export function MediaBin() {
         height: item.height,
       })
 
-      fabricManager.syncClips(useTimelineStore.getState().clips)
+      await fabricManager.syncClips(useTimelineStore.getState().clips)
+    } else if (item.type === 'video') {
+      try {
+        const file = await getFile(item.id)
+        if (!file) {
+          throw new Error(`未找到媒体文件：${item.id}`)
+        }
+
+        const input = new Input({
+          formats: ALL_FORMATS,
+          source: new BlobSource(file),
+        })
+
+        let duration = item.duration
+        if (!duration || !Number.isFinite(duration)) {
+          duration = await input.computeDuration()
+        }
+
+        const videoTrack = await input.getPrimaryVideoTrack()
+        if (!videoTrack) {
+          throw new Error('视频文件缺少可用的视频轨道')
+        }
+
+        const sink = new VideoSampleSink(videoTrack)
+        const sample = await sink.getSample(0)
+
+        let posterSrc: string | undefined
+        if (sample) {
+          const canvas = document.createElement('canvas')
+          canvas.width = item.width
+          canvas.height = item.height
+          const ctx = canvas.getContext('2d')
+          if (!ctx) {
+            throw new Error('无法创建 CanvasRenderingContext2D')
+          }
+
+          sample.draw(ctx, 0, 0)
+          posterSrc = canvas.toDataURL('image/png')
+          sample.close()
+        }
+
+        const resolvedDuration =
+          duration && Number.isFinite(duration) && duration > 0 ? duration : 1
+
+        addClip({
+          type: 'video',
+          mediaId: item.id,
+          color: '#2563eb',
+          width: item.width,
+          height: item.height,
+          duration: resolvedDuration,
+          posterSrc,
+        })
+
+        await fabricManager.syncClips(useTimelineStore.getState().clips)
+      } catch (error) {
+        console.error('添加视频片段失败:', error)
+      }
     }
   }
 
