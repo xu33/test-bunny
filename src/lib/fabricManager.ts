@@ -1,12 +1,16 @@
 import * as fabric from 'fabric'
 import mitt from 'mitt'
-import { ALL_FORMATS, BlobSource, Input, VideoSampleSink } from 'mediabunny'
 import type { Clip, ClipSpatial } from '@/store/timeline'
 import { getBlobUrl } from './blobCache'
-import { getFile } from './db'
 
 // 导出时不要直接用带缩放/clipPath 的运行时画布；新建一个 fabric.StaticCanvas(1080, 1920)，把每个 clip.spatial 数据复制成对象（无需 viewportScale），
 // 按层级添加后调用 toDataURL / toCanvasElement 生成帧，要渲染视频可在主循环中用同样方式按时间片生成帧，送入 CanvasCaptureMediaStream 或 ffmpeg.wasm 等编码器，即可获得 1080×1920 成品。
+
+type FabricObjectWithId = fabric.Object & { clipId: string }
+type FabricRectWithBounds = fabric.Rect & {
+  isRenderBounds: boolean
+  excludeFromExport: boolean
+}
 
 interface ManagerConfig {
   backgroundColor?: string
@@ -32,216 +36,13 @@ const VIEWPORT_PADDING = { x: 32, y: 48 }
 
 export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
   let canvas: fabric.Canvas | null = null
-  let boundsRect: fabric.Object | null = null
+  let boundsRect: FabricRectWithBounds | null = null
   let clipPathRect: fabric.Rect | null = null
   let viewportScale = 1
   let viewportOffset = { x: 0, y: 0 }
   let lastBoundsConfig: RenderBoundsConfig = {
     width: LOGICAL_BOUNDS.width,
     height: LOGICAL_BOUNDS.height,
-  }
-
-  type VideoResource = {
-    sink: VideoSampleSink
-    input: Input
-  }
-
-  const videoResourceCache = new Map<string, Promise<VideoResource>>()
-  const clipSurfaceCache = new Map<
-    string,
-    { canvas: HTMLCanvasElement; context: CanvasRenderingContext2D }
-  >()
-  const clipFrameRequestTokens = new Map<string, number>()
-  const lastRenderedTimestamps = new Map<string, number>()
-  let frameRequestCounter = 0
-
-  const FRAME_TIME_EPSILON = 1 / 240
-
-  const clampNumber = (value: number, min: number, max: number) => {
-    const safeMin = Number.isFinite(min) ? min : value
-    const safeMax = Number.isFinite(max) ? max : value
-    if (safeMin > safeMax) {
-      return safeMin
-    }
-    return Math.max(safeMin, Math.min(safeMax, value))
-  }
-
-  const cleanupClipResources = (clipId: string) => {
-    clipSurfaceCache.delete(clipId)
-    lastRenderedTimestamps.delete(clipId)
-    clipFrameRequestTokens.delete(clipId)
-  }
-
-  const ensureVideoResource = async (mediaId: string) => {
-    let resourcePromise = videoResourceCache.get(mediaId)
-    if (!resourcePromise) {
-      resourcePromise = (async () => {
-        const file = await getFile(mediaId)
-        if (!file) {
-          throw new Error(`未找到媒体文件：${mediaId}`)
-        }
-
-        const input = new Input({
-          formats: ALL_FORMATS,
-          source: new BlobSource(file),
-        })
-
-        const track = await input.getPrimaryVideoTrack()
-        if (!track) {
-          input.dispose()
-          throw new Error('视频文件缺少可用的视频轨道')
-        }
-
-        const sink = new VideoSampleSink(track)
-        return { sink, input }
-      })()
-
-      videoResourceCache.set(mediaId, resourcePromise)
-      resourcePromise.catch(() => {
-        videoResourceCache.delete(mediaId)
-      })
-    }
-
-    return resourcePromise
-  }
-
-  const getClipSurface = (clip: Clip) => {
-    const width = Math.max(1, Math.round(clip.spatial.width || 1))
-    const height = Math.max(1, Math.round(clip.spatial.height || 1))
-    let surface = clipSurfaceCache.get(clip.id)
-
-    if (!surface) {
-      const canvasElement = document.createElement('canvas')
-      canvasElement.width = width
-      canvasElement.height = height
-      const context = canvasElement.getContext('2d')
-      if (!context) {
-        throw new Error('无法创建 CanvasRenderingContext2D')
-      }
-      surface = { canvas: canvasElement, context }
-      clipSurfaceCache.set(clip.id, surface)
-    } else if (
-      surface.canvas.width !== width ||
-      surface.canvas.height !== height
-    ) {
-      surface.canvas.width = width
-      surface.canvas.height = height
-    }
-
-    return surface
-  }
-
-  const computeSourceTimestamp = (clip: Clip, currentTime: number) => {
-    const timeInClip = currentTime - clip.timelineStart
-    const baseTrimStart = clip.trimStart
-    const sourceDuration = clip.sourceDuration ?? clip.duration
-    const maxPlayable = sourceDuration - clip.trimEnd
-    const unclamped = baseTrimStart + timeInClip
-
-    const upperBound = Math.max(baseTrimStart, maxPlayable - FRAME_TIME_EPSILON)
-
-    return clampNumber(unclamped, baseTrimStart, upperBound)
-  }
-
-  const updateVideoFrameForClip = async (
-    fabricObj: fabric.Object,
-    clip: Clip,
-    currentTime: number
-  ): Promise<void> => {
-    if (clip.content?.type !== 'video') {
-      return
-    }
-
-    if (!canvas) {
-      return
-    }
-
-    const sourceTimestamp = computeSourceTimestamp(clip, currentTime)
-    const previousTimestamp = lastRenderedTimestamps.get(clip.id)
-    if (
-      previousTimestamp !== undefined &&
-      Math.abs(previousTimestamp - sourceTimestamp) <= FRAME_TIME_EPSILON
-    ) {
-      return
-    }
-
-    const requestToken = ++frameRequestCounter
-    clipFrameRequestTokens.set(clip.id, requestToken)
-
-    try {
-      const resource = await ensureVideoResource(clip.content.mediaId)
-      const sample = await resource.sink.getSample(sourceTimestamp)
-      if (!sample) return
-
-      const { canvas: surface, context } = getClipSurface(clip)
-      context.clearRect(0, 0, surface.width, surface.height)
-      sample.draw(context, 0, 0, surface.width, surface.height)
-      sample.close()
-
-      if (clipFrameRequestTokens.get(clip.id) !== requestToken) {
-        return
-      }
-
-      const dataUrl = surface.toDataURL('image/png')
-
-      await new Promise<void>(resolve => {
-        if (fabricObj instanceof fabric.Image) {
-          fabricObj.setSrc(dataUrl, () => {
-            fabricObj.set({
-              width: clip.spatial.width,
-              height: clip.spatial.height,
-            })
-            fabricObj.setCoords()
-            resolve()
-          })
-        } else {
-          fabric.Image.fromURL(
-            dataUrl,
-            createdImage => {
-              if (!createdImage) {
-                resolve()
-                return
-              }
-
-              createdImage.set({
-                left: clip.spatial.x,
-                top: clip.spatial.y,
-                width: clip.spatial.width,
-                height: clip.spatial.height,
-                angle: clip.spatial.rotation,
-                scaleX: clip.spatial.scaleX,
-                scaleY: clip.spatial.scaleY,
-                opacity: clip.spatial.opacity,
-                originX: 'left',
-                originY: 'top',
-                objectCaching: false,
-              })
-              createdImage.set('clipId', clip.id)
-              createdImage.set('content', clip.content)
-              const objects = canvas.getObjects()
-              const targetIndex = objects.indexOf(fabricObj)
-              canvas.remove(fabricObj)
-              if (targetIndex >= 0) {
-                canvas.insertAt(createdImage, targetIndex, false)
-              } else {
-                canvas.add(createdImage)
-              }
-              createdImage.setCoords()
-              resolve()
-            },
-            {
-              crossOrigin: 'anonymous',
-            }
-          )
-        }
-      })
-
-      if (clipFrameRequestTokens.get(clip.id) === requestToken) {
-        lastRenderedTimestamps.set(clip.id, sourceTimestamp)
-      }
-    } catch (error) {
-      console.error('更新视频帧失败:', clip.id, error)
-    }
   }
 
   const emitter = mitt<ManagerEvents>()
@@ -301,10 +102,10 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
         evented: false,
         originX: 'left',
         originY: 'top',
-      })
+      }) as FabricRectWithBounds
 
-      boundsRect.set('isRenderBounds', true)
-      boundsRect.set('excludeFromExport', true)
+      boundsRect.isRenderBounds = true
+      boundsRect.excludeFromExport = true
       canvas.add(boundsRect)
     } else {
       boundsRect.set({
@@ -344,7 +145,9 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
   const createClipObject = async (clip: Clip) => {
     if (clip.content?.type === 'image' && clip.content.mediaId) {
       const objectUrl = await getBlobUrl(clip.content.mediaId)
-      const imgObj = await fabric.Image.fromURL(objectUrl!)
+      const imgObj = (await fabric.Image.fromURL(
+        objectUrl!
+      )) as unknown as FabricObjectWithId
 
       imgObj.set({
         left: clip.spatial.x,
@@ -361,58 +164,32 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
         objectCaching: false,
       })
 
-      imgObj.set('clipId', clip.id)
-      imgObj.set('content', clip.content)
+      imgObj.clipId = clip.id
       return imgObj
-    } else if (clip.content?.type === 'video') {
-      if (clip.content.posterSrc) {
-        const posterImage = await fabric.Image.fromURL(clip.content.posterSrc)
-
-        posterImage.set({
-          left: clip.spatial.x,
-          top: clip.spatial.y,
-          width: clip.spatial.width,
-          height: clip.spatial.height,
-          angle: clip.spatial.rotation,
-          scaleX: clip.spatial.scaleX,
-          scaleY: clip.spatial.scaleY,
-          opacity: clip.spatial.opacity,
-          selectable: true,
-          originX: 'left',
-          originY: 'top',
-          objectCaching: false,
-        })
-
-        posterImage.set('clipId', clip.id)
-        posterImage.set('content', clip.content)
-        return posterImage
-      }
     }
-    // else if (clip.content?.type === 'video' && clip.content.mediaId) {
-    // }
-    else {
-      const obj = new fabric.Rect({
-        left: clip.spatial.x,
-        top: clip.spatial.y,
-        width: clip.spatial.width,
-        height: clip.spatial.height,
-        angle: clip.spatial.rotation,
-        fill: clip.color,
-        scaleX: clip.spatial.scaleX,
-        scaleY: clip.spatial.scaleY,
-        opacity: clip.spatial.opacity,
-        stroke: '#ffffff',
-        strokeWidth: 1,
-        objectCaching: false,
-        originX: 'left',
-        originY: 'top',
-      })
-      obj.set('clipId', clip.id)
-      return obj
-    }
+
+    const obj = new fabric.Rect({
+      left: clip.spatial.x,
+      top: clip.spatial.y,
+      width: clip.spatial.width,
+      height: clip.spatial.height,
+      angle: clip.spatial.rotation,
+      fill: clip.color,
+      scaleX: clip.spatial.scaleX,
+      scaleY: clip.spatial.scaleY,
+      opacity: clip.spatial.opacity,
+      stroke: '#ffffff',
+      strokeWidth: 1,
+      objectCaching: false,
+      originX: 'left',
+      originY: 'top',
+    }) as unknown as FabricObjectWithId
+
+    obj.clipId = clip.id
+    return obj
   }
 
-  const updateClipObject = (fabricObj: fabric.Object, clip: Clip) => {
+  const updateClipObject = (fabricObj: FabricObjectWithId, clip: Clip) => {
     fabricObj.set({
       left: clip.spatial.x,
       top: clip.spatial.y,
@@ -437,10 +214,9 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
     })
 
     canvas.on('object:modified', event => {
-      const target = event.target
-      const clipId = target?.get('clipId')
-      console.log('object:modified', target.get('clipId'))
-      if (!target || clipId) return
+      const target = event.target as FabricObjectWithId
+      console.log('object:modified', target.clipId)
+      if (!target || !target.clipId) return
 
       const properties: ClipSpatial = {
         x: target.left ?? 0,
@@ -453,7 +229,7 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
         opacity: target.opacity ?? 1,
       }
 
-      emitter.emit('objectModified', { clipId, properties })
+      emitter.emit('objectModified', { clipId: target.clipId, properties })
     })
 
     applyViewportTransform()
@@ -491,12 +267,12 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
     if (!canvas) return
 
     const obj = canvas.getObjects().find(o => {
-      return o.get('clipId') === clipId
+      const fabricObj = o as FabricObjectWithId
+      return fabricObj.clipId === clipId
     })
 
     if (obj) {
       canvas.remove(obj)
-      cleanupClipResources(clipId)
       canvas.renderAll()
     }
   }
@@ -506,20 +282,22 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
 
     const objects = canvas
       .getObjects()
-      .filter(obj => !obj.get('isRenderBounds'))
+      .filter(obj => !(obj as FabricRectWithBounds).isRenderBounds)
 
     const idsToRemove = new Set<string>()
 
     objects.forEach(obj => {
-      if (clips.findIndex(c => c.id === obj.get('clipId')) === -1) {
-        idsToRemove.add(obj.get('clipId'))
+      if (
+        clips.findIndex(c => c.id === (obj as FabricObjectWithId).clipId) === -1
+      ) {
+        idsToRemove.add((obj as FabricObjectWithId).clipId)
       }
     })
 
     for (const clip of clips) {
       const existingObj = objects.find(obj => {
-        const fabricObj = obj
-        return fabricObj.get('clipId') === clip.id
+        const fabricObj = obj as FabricObjectWithId
+        return fabricObj.clipId === clip.id
       })
 
       if (!existingObj) {
@@ -532,13 +310,12 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
     // 移除不再存在的对象
     idsToRemove.forEach(clipId => {
       const objToRemove = objects.find(obj => {
-        const fabricObj = obj
-        return fabricObj.get('clipId') === clipId
+        const fabricObj = obj as FabricObjectWithId
+        return fabricObj.clipId === clipId
       })
       if (objToRemove) {
         canvas?.remove(objToRemove)
       }
-      cleanupClipResources(clipId)
     })
 
     canvas.renderAll()
@@ -559,54 +336,32 @@ export const createFabricCanvasManager = (config: ManagerConfig = {}) => {
     canvas?.renderAll()
   }
 
-  const updateObjectsVisibility = async (
-    currentTime: number,
-    clips: Clip[]
-  ) => {
+  const updateObjectsVisibility = (currentTime: number, clips: Clip[]) => {
     if (!canvas) return
 
-    const updatePromises: Promise<void>[] = []
-
+    console.log('updateObjectsVisibility')
     canvas.getObjects().forEach(obj => {
-      const clipId = obj.get('clipId')
-      if (!clipId) return
+      const fabricObj = obj as FabricObjectWithId
+      if (!fabricObj.clipId) return
 
-      const clip = clips.find(c => c.id === clipId)
-      if (!clip) {
-        cleanupClipResources(clipId)
-        return
-      }
+      const clip = clips.find(c => c.id === fabricObj.clipId)
+      if (!clip) return
 
-      const clipDuration = clip.duration
+      const clipDuration = clip.sourceDuration - clip.trimStart - clip.trimEnd
       const clipEndTime = clip.timelineStart + clipDuration
       const isVisible =
         currentTime >= clip.timelineStart && currentTime < clipEndTime
 
-      obj.set({
+      fabricObj.set({
         visible: isVisible,
         selectable: isVisible,
         hasControls: isVisible,
         hasBorders: isVisible,
         opacity: isVisible ? clip.spatial.opacity : 0,
       })
-
-      if (!isVisible) {
-        clipFrameRequestTokens.delete(clipId)
-        return
-      }
-
-      if (clip.content?.type === 'video') {
-        updatePromises.push(updateVideoFrameForClip(obj, clip, currentTime))
-      }
     })
 
-    if (updatePromises.length) {
-      await Promise.allSettled(updatePromises)
-    }
-
-    if (canvas) {
-      canvas.renderAll()
-    }
+    canvas.renderAll()
   }
 
   const renderAll = () => canvas?.renderAll()
